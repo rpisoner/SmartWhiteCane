@@ -2,6 +2,39 @@
 #include <TinyGPS.h>
 
 /*************************************************
+ *          Clase para manejar motor
+ *************************************************/
+class MotorManager {
+private:
+    int motorPin;
+
+public:
+    MotorManager(int pin) : motorPin(pin) {}
+
+    void begin() {
+        pinMode(motorPin, OUTPUT);
+        digitalWrite(motorPin, LOW); // Apagado al inicio
+    }
+
+    void encender() {
+        digitalWrite(motorPin, HIGH);
+    }
+
+    void apagar() {
+        digitalWrite(motorPin, LOW);
+    }
+
+    // Función que activa motor según distancia
+    void activarPorDistancia(long distancia, long umbral = 100) {
+        if (distancia > 0 && distancia < umbral) {
+            encender();
+        } else {
+            apagar();
+        }
+    }
+};
+
+/*************************************************
  *      Clase para manejar el GPS (TinyGPS)
  *************************************************/
 class GPSManager {
@@ -11,7 +44,6 @@ private:
     unsigned long lastReadTime = 0;
 
 public:
-    // Constructor: indicamos pines RX y TX
     GPSManager(int rxPin, int txPin) : ss(rxPin, txPin) {}
 
     void begin(long baudRate) {
@@ -20,70 +52,45 @@ public:
         Serial.println(TinyGPS::library_version());
     }
 
-    // Llamar constantemente desde loop()
     void update() {
         while (ss.available()) {
             gps.encode(ss.read());
         }
     }
 
-    // Devuelve coordenadas en lat/lon
     bool getCoordenadas(float &lat, float &lon, unsigned long &age) {
         gps.f_get_position(&lat, &lon, &age);
-
         if (lat == TinyGPS::GPS_INVALID_F_ANGLE || 
-            lon == TinyGPS::GPS_INVALID_F_ANGLE) 
-        {
-            return false;  // No hay FIX
+            lon == TinyGPS::GPS_INVALID_F_ANGLE) {
+            return false;
         }
         return true;
     }
 
-    // Satélites en uso
     int getSatelites() {
         int sat = gps.satellites();
         return (sat == TinyGPS::GPS_INVALID_SATELLITES ? -1 : sat);
     }
 
-    // HDOP
     int getHDOP() {
         int h = gps.hdop();
         return (h == TinyGPS::GPS_INVALID_HDOP ? -1 : h);
     }
 
-    // Estadísticas (opcional para debug)
-    void printStats() {
-        unsigned long chars;
-        unsigned short sentences, failed;
-
-        gps.stats(&chars, &sentences, &failed);
-
-        Serial.print("CHARS=");
-        Serial.print(chars);
-        Serial.print(" SENTENCES=");
-        Serial.print(sentences);
-        Serial.print(" CSUM ERR=");
-        Serial.println(failed);
-    }
-
     bool leerDurante1s() {
         bool newData = false;
-
         unsigned long start = millis();
         while (millis() - start < 1000) {
             while (ss.available()) {
                 char c = ss.read();
-                if (gps.encode(c)) {
-                    newData = true;
-                }
+                if (gps.encode(c)) newData = true;
             }
         }
         return newData;
     }
 
-        void mostrarInfo() {
+    void mostrarInfo() {
         bool newData = leerDurante1s();
-
         float lat, lon;
         unsigned long age;
 
@@ -96,10 +103,10 @@ public:
             Serial.print(lon == TinyGPS::GPS_INVALID_F_ANGLE ? 0.0 : lon, 6);
 
             Serial.print(" SAT=");
-            Serial.print(gps.satellites() == TinyGPS::GPS_INVALID_SATELLITES ? 0 : gps.satellites());
+            Serial.print(getSatelites());
 
             Serial.print(" HDOP=");
-            Serial.print(gps.hdop() == TinyGPS::GPS_INVALID_HDOP ? 0 : gps.hdop());
+            Serial.print(getHDOP());
 
             Serial.println();
         }
@@ -107,7 +114,6 @@ public:
             Serial.println("Sin FIX aún... (revisa cableado)");
         }
 
-        // Estadísticas
         unsigned long chars;
         unsigned short sentences, failed;
         gps.stats(&chars, &sentences, &failed);
@@ -124,30 +130,86 @@ public:
     }
 };
 
+/*************************************************
+ *      Clase HC-SR04
+ *************************************************/
+class UltrasonicManager {
+private:
+    int trigPin;
+    int echoPin;
+
+public:
+    UltrasonicManager(int trig, int echo) : trigPin(trig), echoPin(echo) {}
+
+    void begin() {
+        pinMode(trigPin, OUTPUT);
+        pinMode(echoPin, INPUT);
+    }
+
+    long getDistancia() {
+        digitalWrite(trigPin, LOW); delayMicroseconds(5);
+        digitalWrite(trigPin, HIGH); delayMicroseconds(10);
+        digitalWrite(trigPin, LOW);
+
+        long duracion = pulseIn(echoPin, HIGH, 30000UL);
+        if (duracion == 0) return -1;
+
+        long distancia = duracion * 0.034 / 2;
+        if (distancia < 2 || distancia > 400) return -1;
+        return distancia;
+    }
+
+    long getDistanciaPromedio(int lecturas = 5) {
+        long suma = 0;
+        int validas = 0;
+        for(int i=0;i<lecturas;i++){
+            long d = getDistancia();
+            if(d>0){ suma+=d; validas++; }
+            delay(50);
+        }
+        return (validas>0) ? suma/validas : -1;
+    }
+
+    void mostrarInfo() {
+        long d = getDistanciaPromedio();
+        if(d<0){
+            Serial.println("HC-SR04: sin lectura válida");
+        } else {
+            Serial.print("HC-SR04 distancia promedio: "); Serial.print(d); Serial.println(" cm");
+        }
+    }
+};
 
 /*************************************************
- *          Instancias de módulos
+ *            Instancias
  *************************************************/
-
-// GPS en pines RX=4, TX=3 (SoftwareSerial)
-GPSManager gpsManager(4, 3);
-    
+GPSManager gpsManager(4,3);           // RX, TX GPS
+UltrasonicManager ultrasonic(5,6);    // TRIG, ECHO HC-SR04
+MotorManager motor1(7);               // Motor 1 pin Arduino
+MotorManager motor2(8);               // Motor 2 pin Arduino
 
 /*************************************************
  *                    SETUP
  *************************************************/
 void setup() {
     Serial.begin(115200);
-    gpsManager.begin(9600);   // Aquí ajustas el baud del GPS
-    Serial.println("Sistema iniciado.");
+    //gpsManager.begin(9600);
+    ultrasonic.begin();
+    motor1.begin();
+    //motor2.begin();
+    Serial.println("Sistema iniciado");
 }
-
 
 /*************************************************
  *                     LOOP
  *************************************************/
 void loop() {
-    gpsManager.mostrarInfo();
-    delay(1000);
-}
+    //gpsManager.mostrarInfo();
+    ultrasonic.mostrarInfo();
 
+    long distancia = ultrasonic.getDistancia();
+    motor1.activarPorDistancia(distancia);
+
+    delay(1000);
+    Serial.println("----------------------------");
+}
